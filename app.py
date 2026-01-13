@@ -14,6 +14,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+class RequestData(BaseModel):
+    company_name: str
+    industry: str
+    company_size: str
+    goal: str
+
 
 @app.post("/recommend")
 def recommend(data: RequestData):
@@ -22,5 +28,4 @@ def recommend(data: RequestData):
         data.company_size,
         data.goal
     )
-
     return {"recommended_services": services}
