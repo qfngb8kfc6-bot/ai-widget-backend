@@ -1,30 +1,27 @@
-app = FastAPI()
-
-app.add_middleware(
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from rules import recommend_services
 
-@app.get("/health")
-def health():
-    return {"ok": True}
+app = FastAPI()
 
+app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://qfngb8kfc6-bot.github.io"
-    ],
+    allow_origins=["https://qfngb8kfc6-bot.github.io"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
 class RequestData(BaseModel):
     company_name: str
     industry: str
     company_size: str
     goal: str
-
 
 @app.post("/recommend")
 def recommend(data: RequestData):
