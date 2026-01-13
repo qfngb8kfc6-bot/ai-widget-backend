@@ -3,6 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from rules import recommend_services
 
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
 app = FastAPI()
 
 app.add_middleware(
