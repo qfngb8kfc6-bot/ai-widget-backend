@@ -68,4 +68,10 @@ def recommend(data: RequestData, authorization: str | None = Header(default=None
     )
     return {"recommended_services": services}
 
+import os
+
+API_KEYS = {
+    "demo": os.getenv("DEMO_API_KEY"),
+    "client1": os.getenv("CLIENT1_API_KEY"),
+}
 
