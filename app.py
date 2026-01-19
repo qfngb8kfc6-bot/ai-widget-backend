@@ -75,4 +75,34 @@ CUSTOMERS = {
         "active": True,
     },
 }
+DB_PATH = os.getenv("USAGE_DB_PATH", "usage.db")
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS usage (
+            day TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY(day, api_key)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def track_usage(api_key: str):
+    today = date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO usage(day, api_key, count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(day, api_key)
+        DO UPDATE SET count = count + 1
+    """, (today, api_key))
+    conn.commit()
+    conn.close()
 
