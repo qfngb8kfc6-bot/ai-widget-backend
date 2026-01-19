@@ -105,4 +105,84 @@ def track_usage(api_key: str):
     """, (today, api_key))
     conn.commit()
     conn.close()
+def get_domain_from_request(request: Request) -> str | None:
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+
+    url = origin or referer
+    if not url:
+        return None
+
+    try:
+        host = urlparse(url).hostname
+        return host.lower() if host else None
+    except Exception:
+        return None
+
+def verify_api_key_and_domain(
+    request: Request,
+    authorization: str | None
+) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    parts = authorization.split(" ")
+    if len(parts) != 2 or parts[0] != "Bearer":
+        raise HTTPException(status_code=401, detail="Invalid Authorization format")
+
+    api_key = parts[1]
+    customer = CUSTOMERS.get(api_key)
+
+    if not customer or not customer.get("active"):
+        raise HTTPException(status_code=403, detail="Invalid or inactive API key")
+
+    req_domain = get_domain_from_request(request)
+    allowed = [d.lower() for d in customer.get("allowed_domains", [])]
+
+    # If request is coming from a browser widget, Origin/Referer will be present.
+    # If it's missing, you can choose to block or allow. For SaaS widgets: block.
+    if not req_domain:
+        raise HTTPException(status_code=403, detail="Missing Origin/Referer (domain lock enabled)")
+
+    if req_domain not in allowed:
+        raise HTTPException(status_code=403, detail=f"Domain not allowed: {req_domain}")
+
+    return api_key
+    class RequestData(BaseModel):
+    company_name: str | None = ""
+    industry: str
+    company_size: str
+    goal: str
+
+@app.post("/recommend")
+def recommend(
+    data: RequestData,
+    request: Request,
+    authorization: str | None = Header(default=None)
+):
+    api_key = verify_api_key_and_domain(request, authorization)
+    track_usage(api_key)
+
+    # Your existing logic:
+    # services = recommend_services(data.industry, data.company_size, data.goal)
+
+    # Example:
+    services = ["Website copywriting", "Landing page creation", "SEO optimization"]
+
+    return {"recommended_services": services}
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "change-me")
+
+@app.get("/admin/usage")
+def admin_usage(token: str):
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT day, api_key, count FROM usage ORDER BY day DESC, count DESC")
+    rows = cur.fetchall()
+    conn.close()
+
+    return [{"day": r[0], "api_key": r[1], "count": r[2]} for r in rows]
+
 
