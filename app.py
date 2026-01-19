@@ -6,12 +6,14 @@ import os
 import sqlite3
 from datetime import date
 
-
 app = FastAPI()
 
-# CORS (allow GitHub Pages + your future domains)
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["*"],          # allow browser calls
+    allow_credentials=False,      # keep False with wildcard origins
+    allow_methods=["*"],
+    allow_headers=["*"],
     allow_origins=[
         "https://qfngb8kfc6-bot.github.io",
         # later add: "https://yourdomain.com",
