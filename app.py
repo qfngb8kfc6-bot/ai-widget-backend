@@ -61,3 +61,18 @@ def recommend(data: RequestData, authorization: str | None = Header(default=None
     services = ["Website copywriting", "Landing page creation", "SEO optimization"]
 
     return {"recommended_services": services, "customer": customer_key}
+
+CUSTOMERS = {
+    # API_KEY: customer config
+    "demo": {
+        "name": "Demo",
+        "allowed_domains": ["qfngb8kfc6-bot.github.io"],  # no https:// here, just domain
+        "active": True,
+    },
+    "cust_live_123": {
+        "name": "Customer A",
+        "allowed_domains": ["customer.com", "www.customer.com"],
+        "active": True,
+    },
+}
+
