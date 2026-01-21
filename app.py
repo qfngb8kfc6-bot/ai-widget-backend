@@ -23,15 +23,16 @@ app.add_middleware(
 # --------------------------------------------------
 
 API_KEYS = {
-    "demo": {
-        "key": "demo-key-123",
-        "domains": ["*"],  # allow all for demo
+    "acme": {
+        "key": "cust_live_acme_9xK2",
+        "domains": ["acme.com"],
+        "usage": 0
     },
-    # Example real client:
-    # "client1": {
-    #     "key": "client1-secret-key",
-    #     "domains": ["example.com", "www.example.com"]
-    # }
+    "demo": {
+        "key": "cust_demo_123",
+        "domains": ["localhost", "github.io"],
+        "usage": 0
+    }
 }
 
 # Usage tracking (in-memory for now)
