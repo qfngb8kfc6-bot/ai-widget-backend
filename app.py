@@ -39,7 +39,7 @@ USAGE_COUNTER = defaultdict(int)
 # DATA MODEL (matches your widget)
 # --------------------------------------------------
 class RequestData(BaseModel):
-    website_url: Optional[str] = ""  # you can make this HttpUrl if you want strict validation
+    website_url: Optional[str] = ""
     industry: str
     goal: str
 
