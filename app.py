@@ -1,45 +1,45 @@
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl
-from typing import Optional, Dict, List
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
 from collections import defaultdict
 from urllib.parse import urlparse
 
 app = FastAPI(title="AI Widget Backend")
 
 # --------------------------------------------------
-# CORS (keep open while testing; lock later)
+# CORS (keep open for now; domain-lock happens in verify_api_key)
 # --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later: set this to your allowed customer origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],  # includes Authorization for Bearer token
+    allow_headers=["*"],
 )
 
 # --------------------------------------------------
-# API KEYS + DOMAIN LOCKING
+# API KEYS + DOMAIN LOCKING (edit these)
 # --------------------------------------------------
-API_KEYS: Dict[str, Dict[str, object]] = {
+API_KEYS: Dict[str, Dict[str, Any]] = {
     "acme": {
         "key": "cust_live_acme_9xK2",
-        "domains": ["acme.com"],   # allow acme.com + *.acme.com
+        "domains": ["acme.com"],     # allowed origins must contain one of these
     },
     "demo": {
         "key": "cust_demo_123",
-        "domains": ["localhost", "github.io"],  # allow localhost + any github.io subdomain
+        "domains": ["localhost", "github.io"],  # allows GitHub Pages + local dev
     },
 }
 
-# In-memory usage tracking (resets on deploy/restart)
+# Usage tracking (in-memory)
 USAGE_COUNTER = defaultdict(int)
 
 # --------------------------------------------------
-# DATA MODEL (matches your widget)
+# DATA MODEL (matches your widget now)
 # --------------------------------------------------
 class RequestData(BaseModel):
-    website_url: Optional[str] = ""
+    website_url: str
     industry: str
     goal: str
 
@@ -48,46 +48,23 @@ class RequestData(BaseModel):
 # --------------------------------------------------
 def _origin_host(origin: str) -> str:
     """
-    Extract hostname from Origin header (e.g. https://sub.example.com -> sub.example.com)
+    Convert an Origin header like 'https://qfngb8kfc6-bot.github.io'
+    into a host like 'qfngb8kfc6-bot.github.io'
     """
     if not origin:
         return ""
     try:
         parsed = urlparse(origin)
-        return parsed.hostname or ""
+        return parsed.netloc or origin
     except Exception:
-        return ""
-
-def _domain_allowed(host: str, allowed_domains: List[str]) -> bool:
-    """
-    Allow:
-      - exact domain match (example.com)
-      - subdomain match (*.example.com)
-      - simple contains for localhost during dev if needed
-    """
-    if not host:
-        return False
-
-    for d in allowed_domains:
-        d = d.strip().lower()
-        h = host.lower()
-
-        # exact match
-        if h == d:
-            return True
-
-        # allow subdomains: foo.example.com endswith .example.com
-        if h.endswith("." + d):
-            return True
-
-    return False
+        return origin
 
 def verify_api_key(authorization: Optional[str], request: Request) -> str:
     if not authorization:
-        raise HTTPException(status_code=401, detail="Missing API key (Authorization header)")
+        raise HTTPException(status_code=401, detail="Missing API key")
 
     if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid auth format. Use: Bearer <key>")
+        raise HTTPException(status_code=401, detail="Invalid auth format (use: Bearer <key>)")
 
     key = authorization.replace("Bearer ", "").strip()
 
@@ -98,12 +75,12 @@ def verify_api_key(authorization: Optional[str], request: Request) -> str:
         if key == data["key"]:
             allowed_domains = data.get("domains", [])
 
-            # If you want to allow any domain for some keys, add "*" to their domains list.
-            if "*" not in allowed_domains:
-                if not _domain_allowed(host, allowed_domains):
+            # Domain lock
+            if allowed_domains and "*" not in allowed_domains:
+                if not any(d in host for d in allowed_domains):
                     raise HTTPException(
                         status_code=403,
-                        detail=f"Domain not allowed for this API key. Origin={origin}",
+                        detail=f"Domain not allowed for this API key (origin: {origin})",
                     )
 
             USAGE_COUNTER[client] += 1
@@ -124,8 +101,11 @@ def recommend_services(industry: str, goal: str):
     if goal.lower() in ["lead generation", "leads", "more leads"]:
         recommendations.append("Lead funnel optimization")
 
-    # Add more rules here as you like...
-    return list(dict.fromkeys(recommendations))  # unique, keep order
+    if "ecommerce" in industry.lower():
+        recommendations.append("Conversion rate optimization")
+
+    # de-dupe
+    return list(dict.fromkeys(recommendations))
 
 # --------------------------------------------------
 # ROUTES
@@ -153,11 +133,7 @@ def recommend(
     }
 
 @app.get("/usage")
-def usage(
-    request: Request,
-    authorization: Optional[str] = Header(None),
-):
-    # This counts as a request too (so it increments usage).
-    # If you don't want that, I’ll show you how to skip incrementing for /usage.
+def usage(request: Request, authorization: Optional[str] = Header(None)):
+    # Only allow valid keys to view usage
     verify_api_key(authorization, request)
     return dict(USAGE_COUNTER)
