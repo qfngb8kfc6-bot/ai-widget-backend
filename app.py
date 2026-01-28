@@ -181,37 +181,67 @@ def recommend(
 ):
     client = verify_api_key(authorization, request)
 
-    # ✅ Determine host site root
-    host_url = data.host_url or request.headers.get("referer") or request.headers.get("origin") or ""
-    host_root = normalize_site_root(host_url) if host_url else None
+    # Fetch host website (best effort)
+    host_url = data.host_url or request.headers.get("referer") or ""
+    host_root = normalize_site_root(host_url)
 
-    host_services: List[str] = []
-    host_fetch_error: Optional[str] = None
-
-    # ✅ Fetch host site + extract services (best-effort)
+    host_services = []
     if host_root:
         try:
             html = fetch_html(host_root)
             host_services = extract_service_phrases_from_html(html)
-        except Exception as e:
-            host_fetch_error = str(e)
+        except:
+            pass
 
-    services = recommend_services(
-        industry=data.industry,
-        goal=data.goal,
-        host_services=host_services
-    )
+    ranked = []
+
+    def add(service, score, why):
+        ranked.append({
+            "service": service,
+            "score": score,
+            "why": why
+        })
+
+    # Core logic
+    if "marketing" in data.industry.lower():
+        add(
+            "SEO optimization",
+            88,
+            "Your industry is marketing-focused and SEO improves inbound leads."
+        )
+        add(
+            "Landing page optimization",
+            82,
+            "Landing pages convert traffic into leads more effectively."
+        )
+
+    if "lead" in data.goal.lower():
+        add(
+            "Lead funnel optimization",
+            92,
+            "Your goal is lead generation and funnel optimization maximizes conversions."
+        )
+
+    # Boost based on detected site services
+    site_text = " ".join(host_services).lower()
+    if "seo" in site_text:
+        add(
+            "Technical SEO audit",
+            85,
+            "Your site already mentions SEO — a technical audit can unlock more growth."
+        )
+
+    if not ranked:
+        add(
+            "Digital growth strategy",
+            70,
+            "A general strategy helps align your website with your business goals."
+        )
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
 
     return {
         "client": client,
-        "recommended_services": services,
-        "host_detected": host_root,
-        "host_services_found": host_services,
-        "host_fetch_error": host_fetch_error
+        "ranked_services": ranked,
+        "host_services_found": host_services
     }
-
-@app.get("/usage")
-def usage(request: Request, authorization: Optional[str] = Header(None)):
-    verify_api_key(authorization, request)
-    return dict(USAGE_COUNTER)
-
