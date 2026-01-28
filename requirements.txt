@@ -3,3 +3,5 @@ uvicorn
 pydantic
 requests
 beautifulsoup4
+requests
+beautifulsoup4
