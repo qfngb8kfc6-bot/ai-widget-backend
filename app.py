@@ -1,17 +1,17 @@
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, AnyHttpUrl
-from typing import Optional, Dict, List, Any
+from pydantic import BaseModel, HttpUrl
+from typing import Optional, Dict, Any, List
 from collections import defaultdict
 import re
+
 import httpx
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 
 app = FastAPI(title="AI Widget Backend")
 
 # --------------------------------------------------
-# CORS (keep open while testing; lock later)
+# CORS (allow widget + GitHub Pages)
 # --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -22,30 +22,31 @@ app.add_middleware(
 )
 
 # --------------------------------------------------
-# API KEYS + DOMAIN LOCKING + BRANDING
+# API KEYS + DOMAIN LOCKING + (optional) BRANDING
 # --------------------------------------------------
-# NOTE: This is in-memory demo storage. For real SaaS, move to DB.
 API_KEYS: Dict[str, Dict[str, Any]] = {
-    "demo": {
-        "key": "cust_demo_123",
-        "domains": ["localhost", "github.io"],  # allow GitHub Pages + local
+    "acme": {
+        "key": "cust_live_acme_9xK2",
+        "domains": ["acme.com"],
+        "usage": 0,
         "branding": {
-            "name": "Tamed AI",
-            "logo_url": "",  # optional
+            "name": "Acme AI",
+            "logo_url": "",
             "primary": "#0b1020",
             "grad1": "#1e50a0",
             "grad2": "#28aabe",
         },
     },
-    "acme": {
-        "key": "cust_live_acme_9xK2",
-        "domains": ["acme.com"],
+    "demo": {
+        "key": "cust_demo_123",
+        "domains": ["localhost", "github.io"],
+        "usage": 0,
         "branding": {
-            "name": "Acme",
+            "name": "AI Widget",
             "logo_url": "",
             "primary": "#0b1020",
-            "grad1": "#7c3aed",
-            "grad2": "#22c55e",
+            "grad1": "#1e50a0",
+            "grad2": "#28aabe",
         },
     },
 }
@@ -53,23 +54,19 @@ API_KEYS: Dict[str, Dict[str, Any]] = {
 USAGE_COUNTER = defaultdict(int)
 
 # --------------------------------------------------
-# REQUEST MODEL
+# DATA MODEL (matches your widget: website_url + industry + goal)
+# host_url is optional but recommended (widget should send it)
 # --------------------------------------------------
-class RecommendRequest(BaseModel):
-    website_url: AnyHttpUrl
-    host_url: AnyHttpUrl
+class RequestData(BaseModel):
+    website_url: HttpUrl
     industry: str
     goal: str
+    host_url: Optional[HttpUrl] = None
+
 
 # --------------------------------------------------
-# HELPERS: auth + domain lock
+# HELPERS: API KEY + DOMAIN LOCK
 # --------------------------------------------------
-def _extract_hostname(url: str) -> str:
-    try:
-        return (urlparse(url).hostname or "").lower()
-    except Exception:
-        return ""
-
 def verify_api_key(authorization: Optional[str], request: Request) -> str:
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing API key")
@@ -79,185 +76,182 @@ def verify_api_key(authorization: Optional[str], request: Request) -> str:
 
     key = authorization.replace("Bearer ", "").strip()
 
-    # Origin is best for browser calls; Referer can be fallback
-    origin = request.headers.get("origin", "") or ""
-    referer = request.headers.get("referer", "") or ""
-
-    origin_host = _extract_hostname(origin)
-    referer_host = _extract_hostname(referer)
-
     for client, data in API_KEYS.items():
         if key == data["key"]:
-            allowed = data.get("domains", [])
+            origin = request.headers.get("origin", "") or ""
+            allowed_domains = data.get("domains", ["*"])
 
-            # If allowed contains "*", skip checks (not recommended)
-            if "*" not in allowed:
-                # if no origin (some tools/curl), allow
-                if origin_host or referer_host:
-                    # allow if either matches
-                    ok = any(
-                        (d in origin_host) or (d in referer_host)
-                        for d in allowed
+            if "*" not in allowed_domains:
+                if not any(domain in origin for domain in allowed_domains):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Domain not allowed for this API key",
                     )
-                    if not ok:
-                        raise HTTPException(
-                            status_code=403,
-                            detail="Domain not allowed for this API key",
-                        )
 
             USAGE_COUNTER[client] += 1
             return client
 
     raise HTTPException(status_code=403, detail="Invalid API key")
 
-# --------------------------------------------------
-# WEBSITE FETCH + TEXT EXTRACTION
-# --------------------------------------------------
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
 
+# --------------------------------------------------
+# WEBSITE FETCHING + TEXT EXTRACTION
+# IMPORTANT: This is where the 403 can happen.
+# We DO NOT fail the whole request anymore.
+# --------------------------------------------------
 async def fetch_html(url: str) -> str:
-    # IMPORTANT: some sites block scraping. This is a basic MVP.
-    timeout = httpx.Timeout(12.0, connect=8.0)
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,*/*"}
+    # A realistic browser-ish user agent helps reduce blocks (not perfect)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
 
-    async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
-        r = await client.get(url)
+    timeout = httpx.Timeout(12.0, connect=8.0)
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        r = await client.get(url, headers=headers)
         r.raise_for_status()
         return r.text
+
 
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
 
-    # remove junk
-    for tag in soup(["script", "style", "noscript", "svg"]):
+    # Remove junk
+    for tag in soup(["script", "style", "noscript", "svg", "img", "header", "footer"]):
         tag.decompose()
 
-    text = " ".join(soup.stripped_strings)
-    text = re.sub(r"\s+", " ", text).strip().lower()
+    text = soup.get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
+
 # --------------------------------------------------
-# SERVICE TAXONOMY (MVP)
+# "What services does host offer?" (very simple keyword extraction)
+# You can expand this later.
 # --------------------------------------------------
-# This is intentionally opinionated and small to keep it stable.
-SERVICES: Dict[str, List[str]] = {
-    "SEO optimisation": ["seo", "search engine", "google ranking", "keyword", "backlink", "technical seo"],
-    "Paid ads (PPC)": ["ppc", "google ads", "meta ads", "facebook ads", "paid search", "paid social"],
-    "Landing pages & CRO": ["landing page", "conversion", "cro", "a/b test", "funnel", "lead funnel"],
-    "Website copywriting": ["copywriting", "website copy", "messaging", "headline", "value proposition"],
-    "Content marketing": ["content", "blog", "articles", "editorial", "content strategy"],
-    "Email marketing": ["email marketing", "newsletter", "crm", "mailchimp", "klaviyo", "automation"],
-    "Brand & positioning": ["brand", "positioning", "identity", "tone of voice", "rebrand"],
-    "Social media marketing": ["social media", "instagram", "linkedin", "tiktok", "community", "social strategy"],
-    "Web design & build": ["web design", "ux", "ui", "website redesign", "wordpress", "webflow", "shopify"],
-    "Analytics & tracking": ["analytics", "ga4", "tracking", "pixels", "tag manager", "attribution"],
+SERVICE_KEYWORDS = {
+    "SEO optimization": ["seo", "search engine optimization"],
+    "Website copywriting": ["copywriting", "copywriter", "website copy"],
+    "Landing page creation": ["landing page", "conversion page"],
+    "Google Ads / PPC": ["ppc", "google ads", "paid search", "adwords"],
+    "Social media management": ["social media", "instagram", "facebook", "tiktok", "linkedin"],
+    "Email marketing": ["email marketing", "newsletter", "mailchimp", "klaviyo"],
+    "Brand strategy": ["brand strategy", "branding", "positioning"],
+    "Web design": ["web design", "ui", "ux", "website design"],
+    "Web development": ["web development", "development", "react", "wordpress", "shopify"],
+    "Lead funnel optimization": ["lead funnel", "conversion rate", "cro", "funnel"],
+    "Content marketing": ["content marketing", "blog", "articles", "content strategy"],
 }
 
-# Goal → boosters (MVP)
-GOAL_BOOST: Dict[str, List[str]] = {
-    "lead": ["Landing pages & CRO", "Paid ads (PPC)", "SEO optimisation", "Email marketing"],
-    "sales": ["Paid ads (PPC)", "Landing pages & CRO", "Email marketing", "Analytics & tracking"],
-    "traffic": ["SEO optimisation", "Content marketing", "Social media marketing", "Paid ads (PPC)"],
-    "brand": ["Brand & positioning", "Content marketing", "Social media marketing", "Website copywriting"],
-}
-
-def keyword_hits(text: str, keywords: List[str]) -> int:
-    hits = 0
-    for k in keywords:
-        # simple contains count; good enough for MVP
-        hits += text.count(k)
-    return hits
-
-def compute_ranked_services(
-    client_text: str,
-    host_text: str,
-    industry: str,
-    goal: str
-) -> List[Dict[str, Any]]:
-    """
-    Strategy (MVP):
-    - Determine what the client likely needs from their site text + industry + goal
-    - Determine what the host likely offers from host site text
-    - Score = need_score + offer_score + goal_boost
-    - Explain "why" with evidence
-    """
-
-    goal_l = goal.lower()
-    industry_l = industry.lower()
-
-    # which services are boosted by goal keywords
-    boosted_services = set()
-    for gkey, services in GOAL_BOOST.items():
-        if gkey in goal_l:
-            boosted_services.update(services)
-
-    ranked = []
-    for service, keys in SERVICES.items():
-        # Evidence: client needs
-        need = keyword_hits(client_text, keys)
-        # Evidence: host offerings
-        offer = keyword_hits(host_text, keys)
-
-        # Industry bump (tiny heuristic)
-        industry_bump = 2 if any(w in industry_l for w in ["marketing", "agency", "ecommerce", "saas", "software"]) else 0
-
-        # Goal bump
-        goal_bump = 8 if service in boosted_services else 0
-
-        # If host offers it, we prefer it (you asked: host services)
-        offer_weighted = offer * 2
-        need_weighted = need * 1
-
-        raw = offer_weighted + need_weighted + goal_bump + industry_bump
-
-        # If absolutely no signal, skip (keeps results clean)
-        if raw <= 0:
-            continue
-
-        # Create explanation
-        why_parts = []
-        if offer > 0:
-            why_parts.append("Host site appears to mention this service.")
-        else:
-            why_parts.append("Host site does not clearly mention this, but it may still be a good fit.")
-
-        if need > 0:
-            why_parts.append("Client site content suggests relevance (keywords found).")
-        else:
-            why_parts.append("Client site content did not strongly signal this; goal/industry may drive the fit.")
-
-        if goal_bump > 0:
-            why_parts.append(f"Matches the goal: “{goal}”.")
-
-        score = raw  # we'll normalize to 0–100 later
-        ranked.append(
-            {
-                "service": service,
-                "raw": score,
-                "why": " ".join(why_parts),
-                "need_hits": need,
-                "offer_hits": offer,
-            }
-        )
-
-    if not ranked:
+def extract_host_services(host_text: str) -> List[str]:
+    if not host_text:
         return []
 
-    # Normalize raw scores to 0–100
-    max_raw = max(r["raw"] for r in ranked) or 1
-    for r in ranked:
-        r["score"] = int(round((r["raw"] / max_raw) * 100))
-        # clean fields the widget expects
-        del r["raw"]
+    t = host_text.lower()
+    found = []
+    for service, kws in SERVICE_KEYWORDS.items():
+        if any(kw in t for kw in kws):
+            found.append(service)
+
+    # limit noise
+    return found[:10]
+
+
+# --------------------------------------------------
+# RECOMMENDATION ENGINE (ranked services with % + why)
+# This uses:
+# - industry + goal (always)
+# - client site text (if available)
+# - host site services (if available)
+# --------------------------------------------------
+def recommend_ranked(industry: str, goal: str, client_text: str, host_services: List[str]) -> List[Dict[str, Any]]:
+    industry_l = (industry or "").lower()
+    goal_l = (goal or "").lower()
+    client_l = (client_text or "").lower()
+
+    candidates = set()
+
+    # Base candidates from industry/goal
+    if "marketing" in industry_l:
+        candidates.update(["SEO optimization", "Website copywriting", "Landing page creation", "Content marketing"])
+        candidates.update(["Social media management", "Email marketing", "Google Ads / PPC"])
+
+    if any(g in goal_l for g in ["lead", "leads", "lead generation", "pipeline", "sales"]):
+        candidates.update(["Lead funnel optimization", "Landing page creation", "Google Ads / PPC", "Email marketing"])
+
+    if any(g in goal_l for g in ["brand", "branding", "awareness"]):
+        candidates.update(["Brand strategy", "Content marketing", "Social media management", "Website copywriting"])
+
+    # Add services found on host site (if available)
+    for s in host_services:
+        candidates.add(s)
+
+    # If we still have nothing, provide a safe default set
+    if not candidates:
+        candidates.update(["SEO optimization", "Landing page creation", "Website copywriting"])
+
+    ranked = []
+
+    def contains_any(text: str, keywords: List[str]) -> bool:
+        return any(k in text for k in keywords)
+
+    for service in candidates:
+        score = 0
+        reasons = []
+
+        # Industry/goal weighting
+        if service in ["SEO optimization", "Content marketing", "Website copywriting"]:
+            if "marketing" in industry_l:
+                score += 25
+                reasons.append("Your industry suggests marketing-led growth opportunities.")
+
+        if service in ["Lead funnel optimization", "Landing page creation", "Google Ads / PPC", "Email marketing"]:
+            if any(g in goal_l for g in ["lead", "leads", "lead generation", "pipeline", "sales"]):
+                score += 35
+                reasons.append("Your goal indicates you want more leads, so conversion and acquisition matter most.")
+
+        if service in ["Brand strategy", "Social media management", "Content marketing"]:
+            if any(g in goal_l for g in ["brand", "branding", "awareness"]):
+                score += 35
+                reasons.append("Your goal focuses on awareness, so brand + content channels are key.")
+
+        # Boost if host already offers this service
+        if service in host_services:
+            score += 20
+            reasons.append("The host site appears to offer this service already (good fit to propose).")
+
+        # Boost if client website text contains related words
+        kws = SERVICE_KEYWORDS.get(service, [])
+        if client_l and kws and contains_any(client_l, kws):
+            score += 20
+            reasons.append("Your website content hints this service is relevant to your current offering or messaging.")
+
+        # Small baseline so we always return something sensible
+        score += 10
+
+        # Cap score 0-100
+        score = max(0, min(100, score))
+
+        # Filter out ultra-low junk
+        if score < 20:
+            continue
+
+        ranked.append({
+            "service": service,
+            "score": score,
+            "why": " ".join(reasons) if reasons else "Based on your industry and goal."
+        })
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
 
-    # keep top 6 to look SaaS-y
+    # Return top 6
     return ranked[:6]
+
 
 # --------------------------------------------------
 # ROUTES
@@ -266,43 +260,63 @@ def compute_ranked_services(
 def health():
     return {"status": "ok"}
 
+
 @app.post("/recommend")
 async def recommend(
-    data: RecommendRequest,
+    data: RequestData,
     request: Request,
     authorization: Optional[str] = Header(None),
 ):
     client = verify_api_key(authorization, request)
-    branding = API_KEYS.get(client, {}).get("branding", None)
 
-    # Fetch BOTH sites
+    # --- NEW: DO NOT FAIL if scraping fails ---
+    client_text = ""
+    host_text = ""
+
+    # Try client website (entered url)
     try:
         client_html = await fetch_html(str(data.website_url))
-        host_html = await fetch_html(str(data.host_url))
-    except httpx.HTTPError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to fetch one of the websites: {str(e)}",
-        )
+        client_text = html_to_text(client_html)
+    except Exception:
+        # blocked/403/timeouts/etc -> just continue
+        client_text = ""
 
-    client_text = html_to_text(client_html)
-    host_text = html_to_text(host_html)
+    # Try host site (where widget is embedded)
+    # If host_url not provided, fallback to Origin header (best effort)
+    host_url = str(data.host_url) if data.host_url else (request.headers.get("origin") or "")
+    if host_url:
+        try:
+            host_html = await fetch_html(host_url)
+            host_text = html_to_text(host_html)
+        except Exception:
+            host_text = ""
 
-    ranked_services = compute_ranked_services(
-        client_text=client_text,
-        host_text=host_text,
+    host_services = extract_host_services(host_text)
+
+    ranked = recommend_ranked(
         industry=data.industry,
         goal=data.goal,
+        client_text=client_text,
+        host_services=host_services,
     )
+
+    branding = API_KEYS.get(client, {}).get("branding", None)
 
     return {
         "client": client,
         "branding": branding,
-        "ranked_services": ranked_services,  # <-- THIS is what your widget should render
+        "ranked_services": ranked,  # <-- widget should read this
+        "host_services_detected": host_services,  # helpful for debugging
+        "signals": {
+            "client_site_scraped": bool(client_text),
+            "host_site_scraped": bool(host_text),
+        },
     }
+
 
 @app.get("/usage")
 def usage(request: Request, authorization: Optional[str] = Header(None)):
-    # must verify correctly using actual request object
+    # verify_api_key needs a real request object (this function has it)
     verify_api_key(authorization, request)
     return dict(USAGE_COUNTER)
+
